@@ -87,8 +87,9 @@ packing/
 python manage.py test packing -v 2
 ```
 
-Also runs on GitHub Actions (see `.github/workflows/tests.yml`).  
-Local run output is saved in `TEST_OUTPUT.md`.
+Also intended for GitHub Actions — workflow file is `github-actions-tests.yml`.
+To enable CI on GitHub: create `.github/workflows/tests.yml` from that file
+(needs a token with the `workflow` scope), or paste the local run from `TEST_OUTPUT.md`.
 
 ## Design notes
 
