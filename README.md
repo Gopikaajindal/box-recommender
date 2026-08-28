@@ -1,107 +1,162 @@
-# Box Recommender
+# Chat Transcript
 
-Small Django project for an ecommerce warehouse flow: given an order (products + quantities), recommend the most suitable shipping box.
+---
 
-## What it does
+### Conversation 1 — Planning the Data Model
 
-Each **product** has length / width / height (cm) and weight (kg).  
-Each **box** has inner dimensions, max weight, and cost.
+**User:**
 
-For an order the system:
+I'm building a small Django box recommendation system. I have products with dimensions and weight, boxes with internal dimensions, maximum weight, and cost, and orders containing products and quantities.
 
-1. Checks **weight** — total item weight must be ≤ box max weight  
-2. Checks **fit** — every product must fit inside the box (items may be rotated)  
-3. Checks **volume** — total item volume must fit under usable box volume (85% fill factor, since packing is never perfect)  
-4. Among boxes that pass, picks the **cheapest**; if cost is equal, picks the **smallest volume**
+What would be a sensible Django model structure for this without making it unnecessarily complicated?
 
-I deliberately did **not** implement full 3D bin packing. For this catalog it felt like overkill, harder to debug, and harder to explain to warehouse staff.
+**AI:**
 
-## Setup
+A simple structure could use separate models for `Product`, `Box`, `Order`, and `OrderItem`.
 
-```bash
-python -m venv .venv
+`OrderItem` can connect an order to a product and store the quantity. The product can contain its dimensions and weight, while the box can contain its internal dimensions, maximum weight, cost, and an active/inactive flag.
 
-# Windows
-.venv\Scripts\activate
+Keeping these concepts separate makes the recommendation service easier to reason about.
 
-# macOS / Linux
-source .venv/bin/activate
+**User:**
 
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py seed_demo_data
-python manage.py createsuperuser   # optional, for admin
-python manage.py runserver
-```
+I also want to be able to create orders from SKUs rather than sending all the product information every time.
 
-Admin: http://127.0.0.1:8000/admin/
+**AI:**
 
-## API
+Using a unique SKU on the Product model would work well. The API can receive the SKU and quantity, look up the corresponding product, and create the order item.
 
-| Method | URL | Purpose |
-|--------|-----|---------|
-| GET | `/api/boxes/` | List active boxes |
-| POST | `/api/recommend/` | Recommend from `order_id` or `items` |
-| GET | `/api/orders/<id>/recommend/` | Recommend + save on that order |
-| POST | `/api/orders/` | Create order, recommend box |
+**Decision:**
 
-### Examples
+I used separate `Product`, `Box`, `Order`, and `OrderItem` models, with SKU-based product lookup.
 
-Recommend by SKUs:
+---
 
-```bash
-curl -X POST http://127.0.0.1:8000/api/recommend/ ^
-  -H "Content-Type: application/json" ^
-  -d "{\"items\": [{\"sku\": \"MUG-01\", \"quantity\": 2}]}"
-```
+### Conversation 2 — What Should "Suitable Box" Mean?
 
-Create an order:
+**User:**
 
-```bash
-curl -X POST http://127.0.0.1:8000/api/orders/ ^
-  -H "Content-Type: application/json" ^
-  -d "{\"reference\": \"ORD-1001\", \"items\": [{\"sku\": \"LAMP-01\", \"quantity\": 1}]}"
-```
+I need to define exactly when a box is considered suitable. What checks should happen before I select a box?
 
-CLI:
+**AI:**
 
-```bash
-python manage.py recommend_box ORD-1001
-```
+A box can be considered suitable only if it satisfies all required constraints.
 
-## Project layout
+For this project, useful checks are:
 
-```
-config/                 # Django project settings
-packing/
-  models.py             # Product, Box, Order, OrderItem
-  services/recommender.py
-  views.py              # JSON API
-  management/commands/  # seed_demo_data, recommend_box
-  tests/
-```
+- The total order weight does not exceed the box's maximum weight.
+- Each product can physically fit inside the box.
+- The total product volume stays within the usable box volume.
 
-## Tests
+Only boxes passing all three checks should be considered for recommendation.
 
-```bash
-python manage.py test packing -v 2
-```
+**User:**
 
-Also intended for GitHub Actions — workflow file is `github-actions-tests.yml`.
-To enable CI on GitHub: create `.github/workflows/tests.yml` from that file
-(needs a token with the `workflow` scope), or paste the local run from `TEST_OUTPUT.md`.
+Should I check cost before those things?
 
-## Design notes
+**AI:**
 
-- Dimensions are stored as `Decimal` so money/weight math stays precise.
-- Rotation: all 6 orientations are considered when checking if a product fits.
-- Fill factor `0.85` is a constant in `recommender.py` — easy to tune later.
-- Inactive boxes (`is_active=False`) are ignored.
+No. Cost should be used to choose between boxes that are already valid. A cheap box that cannot safely contain the order should never be selected.
 
-## Submission files
+**Decision:**
 
-- `README.md` — this file  
-- `AI_USAGE.md` — how AI was used  
-- `LEARNINGS.md` — what I learned  
-- `TEST_OUTPUT.md` — test run paste  
-- `CHAT_TRANSCRIPT.md` — exported chat (see note inside that file)
+The implementation performs the constraint checks first and only sorts valid boxes by cost afterward.
+
+---
+
+### Conversation 3 — Quantities in an Order
+
+**User:**
+
+If an order contains two mugs, should the recommendation logic check the mug's dimensions twice or only once?
+
+**AI:**
+
+The quantity should affect the total weight and total volume of the order. For example, two identical products contribute twice their individual weight and volume.
+
+The individual physical-fit check can still verify that the product itself can fit inside the box.
+
+**User:**
+
+So if one mug fits but five mugs have too much total volume, the box should fail?
+
+**AI:**
+
+Correct. Individual fit and total capacity are separate concerns.
+
+A product being able to fit through the box dimensions doesn't mean that an arbitrary number of those products can fit within the box's usable capacity.
+
+**Decision:**
+
+Order quantities are included when calculating total weight and total volume.
+
+---
+
+### Conversation 4 — Rotation of Products
+
+**User:**
+
+I have product dimensions stored as length, width, and height. What's the easiest way to allow a product to be rotated when checking if it fits?
+
+**AI:**
+
+You can compare the box dimensions against all possible permutations of the product's three dimensions.
+
+For three dimensions there are six possible orientations.
+
+If any orientation satisfies the box dimensions, the product can be considered to fit.
+
+**User:**
+
+Would sorting both dimension lists be enough?
+
+**AI:**
+
+Sorting the dimensions can work for a simple "does this rectangular object fit?" check because it matches the largest dimension to the largest available dimension, and so on.
+
+However, explicitly considering the permutations makes the intent clearer and gives you direct control over the orientations being tested.
+
+**Decision:**
+
+I implemented rotation support by checking the possible dimension orientations in `product_fits_in_box`.
+
+---
+
+### Conversation 5 — Why Volume Isn't Enough
+
+**User:**
+
+I was thinking of only comparing the product volume with the box volume. Is there a problem with that?
+
+**AI:**
+
+Yes. Volume alone cannot guarantee that an object physically fits.
+
+For example, a long narrow product can have a relatively small volume but still be longer than every corresponding dimension of the box.
+
+The volume check should therefore be combined with a physical dimension check.
+
+**User:**
+
+That makes sense. I don't want a mathematically small object to be accepted when its shape obviously can't fit.
+
+**Decision:**
+
+The recommender keeps both checks: physical dimension fit and total usable volume.
+
+---
+
+### Conversation 6 — Choosing the Fill Factor
+
+**User:**
+
+I don't want to treat the entire theoretical box volume as usable because real packing isn't perfect. What would be a reasonable way to handle that?
+
+**AI:**
+
+A fill factor can represent the portion of the theoretical box volume that you consider practically usable.
+
+For example:
+
+```text
+usable volume = box volume × 0.85
